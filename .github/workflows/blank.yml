@@ -1,4 +1,4 @@
-name: Build RTSP Demo (AK3918)
+name: Build RTSP Demo (AK3918) - Static
 
 on:
   workflow_dispatch:
@@ -19,11 +19,10 @@ jobs:
       - name: List files (debug)
         run: ls -la
 
-      - name: Compile RTSP demo
+      - name: Compile RTSP demo (static)
         run: |
           export PATH=${{ env.TOOLCHAIN_PATH }}/bin:$PATH
-          # 所有文件都在当前目录（.），使用 -I. 和 -L. 指定路径
-          arm-linux-gcc -o ak_rtsp_demo ak_rtsp_demo.c \
+          arm-linux-gcc -static -o ak_rtsp_demo ak_rtsp_demo.c \
             -I. \
             -L. \
             -Wl,--start-group \
@@ -33,10 +32,10 @@ jobs:
             -lakmedialib -lakstreamenc -lakv_encode -lakispsdk -lakuio \
             -lakaudiocodec -lakaudiofilter \
             -Wl,--end-group \
-            -lpthread -ldl
+            -lpthread -ldl -lm
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: ak_rtsp_demo-armv5
+          name: ak_rtsp_demo-armv5-static
           path: ak_rtsp_demo
