@@ -12,6 +12,9 @@
 #include "ak_venc.h"
 #include "ak_rtsp.h"
 
+// 声明安凯 ISP SDK 初始化函数（来自 libakispsdk.so）
+int AK_ISP_sdk_init(const char *config_file);
+
 #define DEFAULT_CONFIG_PATH          "/etc/jffs2/"
 #define LEN_HINT                    512
 #define DEFAULT_MAIN_WIDTH          1920
@@ -96,6 +99,15 @@ static void *ak_rtsp_vi_init(void)
     printf("[DEBUG] config_path = %s\n", config_path);
     printf("[DEBUG] skip_sensor_match = %d\n", skip_sensor_match);
 
+    // ---- 新增：调用 ISP SDK 初始化，加载配置文件 ----
+    // 构造配置文件路径：config_path/isp_h63.conf
+    char isp_config[256];
+    snprintf(isp_config, sizeof(isp_config), "%s/isp_h63.conf", config_path);
+    printf("[DEBUG] Calling AK_ISP_sdk_init(\"%s\")\n", isp_config);
+    int ret = AK_ISP_sdk_init(isp_config);
+    printf("[DEBUG] AK_ISP_sdk_init returned %d\n", ret);
+    // ------------------------------------------------
+
     struct stat st;
     if (stat(config_path, &st) != 0) {
         printf("[ERROR] Path %s does NOT exist or is inaccessible!\n", config_path);
@@ -105,7 +117,7 @@ static void *ak_rtsp_vi_init(void)
 
     // 始终调用 ak_vi_match_sensor，但根据 skip 标志决定是否检查返回值
     printf("[DEBUG] Calling ak_vi_match_sensor(\"%s\") ...\n", config_path);
-    int ret = ak_vi_match_sensor(config_path);
+    ret = ak_vi_match_sensor(config_path);
     if (ret < 0) {
         printf("[DEBUG] ak_vi_match_sensor returned %d\n", ret);
         if (!skip_sensor_match) {
