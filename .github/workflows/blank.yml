@@ -1,0 +1,42 @@
+name: Build RTSP Demo (AK3918)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download ARMv5 uClibc toolchain
+        run: |
+          wget https://toolchains.bootlin.com/downloads/releases/toolchains/armv5-eabi/tarballs/armv5-eabi--uclibc--stable-2024.02-1.tar.bz2
+          tar -xjf armv5-eabi--uclibc--stable-2024.02-1.tar.bz2
+          echo "TOOLCHAIN_PATH=$PWD/armv5-eabi--uclibc--stable-2024.02-1" >> $GITHUB_ENV
+
+      - name: Compile RTSP demo
+        run: |
+          export PATH=${{ env.TOOLCHAIN_PATH }}/bin:$PATH
+          # 进入 demo 目录（假设你的 demo 文件夹就在根目录下）
+          cd demo/rtsp_demo
+          arm-linux-gcc -o ak_rtsp_demo ak_rtsp_demo.c \
+            -I../../libapp/include \
+            -I../../libmpi/include \
+            -I../../libplat/include \
+            -L../../libapp/lib \
+            -L../../libmpi/lib \
+            -L../../libplat/lib \
+            -lapp_rtsp -lapp_net \
+            -lmpi_venc \
+            -lplat_common -lplat_thread -lplat_vi -lplat_vpss -lplat_ipcsrv -lplat_venc_cb \
+            -lakmedialib -lakstreamenc -lakv_encode -lakispsdk -lakuio \
+            -lakaudiocodec -lakaudiofilter \
+            -lpthread -ldl
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ak_rtsp_demo-armv5
+          path: demo/rtsp_demo/ak_rtsp_demo
