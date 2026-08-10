@@ -73,7 +73,7 @@ struct option option_long[ ] = {
     { "maxqp"            , required_argument , NULL , 'r' } ,
     { "config-path"      , required_argument , NULL , 'P' } ,
     { "skip-match"       , no_argument       , NULL , 's' } ,
-    { "init-mode"        , required_argument , NULL , 'm' } ,
+    { "init-mode"        , required_argument , NULL , 'M' } ,   // 使用大写 M
 };
 
 int i_main_width = DEFAULT_MAIN_WIDTH;
@@ -169,7 +169,7 @@ static void *ak_rtsp_vi_init(void)
     struct stat st;
     if (stat(isp_config, &st) != 0) {
         printf("[ERROR] ISP config file %s does not exist!\n", isp_config);
-        // 尝试使用 h63 以外的，但先警告
+        // 继续尝试，也许程序内部会处理
     }
 
     // 始终调用 ak_vi_match_sensor（除非跳过）
@@ -282,7 +282,8 @@ int main(int argc, char **argv)
 
     register_signal();
 
-    while( ( i_option = getopt_long( argc , argv , "ha:b:c:d:e:f:g:i:j:k:l:m:n:o:p:q:r:P:s:m:" , option_long , NULL ) ) != -1 ) {
+    // 注意：短选项字符串中 m 改为 M（大写）
+    while( ( i_option = getopt_long( argc , argv , "ha:b:c:d:e:f:g:i:j:k:l:m:n:o:p:q:r:P:s:M:" , option_long , NULL ) ) != -1 ) {
         switch( i_option ) {
             case 'h' :
                 help_hint( ) ;
@@ -346,7 +347,7 @@ int main(int argc, char **argv)
                 skip_sensor_match = 1 ;
                 printf("[INFO] Will skip sensor match error (ignore failure).\n");
                 break;
-            case 'm' :
+            case 'M' :   // 大写 M 用于 init-mode
                 init_mode = atoi(optarg);
                 printf("[INFO] Init mode set to %d\n", init_mode);
                 break;
