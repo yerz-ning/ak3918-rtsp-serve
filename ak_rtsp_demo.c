@@ -4,7 +4,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <getopt.h>
-#include <sys/stat.h>      // 用于目录检查
+#include <sys/stat.h>
 
 #include "ak_thread.h"
 #include "ak_common.h"
@@ -32,8 +32,9 @@
 #define DEFAULT_MAIN_SUFFIX         "vs0"
 #define DEFAULT_SUB_SUFFIX          "vs1"
 
-// 新增：可被命令行修改的配置路径
+// 可被命令行修改的配置路径和标志
 char *config_path = DEFAULT_CONFIG_PATH;
+int skip_sensor_match = 0;          // 新增：跳过传感器匹配标志
 
 char ac_option_hint[  ][ LEN_HINT ] = {
 	"       HELP" ,
@@ -48,7 +49,8 @@ char ac_option_hint[  ][ LEN_HINT ] = {
 	"[NUM]  ( DEFAULT: 50 )" ,
 	"[NUM]  ( DEFAULT: 28 )" ,
 	"[NUM]  ( DEFAULT: 42 )" ,
-	"[PATH] ( DEFAULT: '/etc/jffs2/' )" ,   // 新增 -p 参数提示
+	"[PATH] ( DEFAULT: '/etc/jffs2/' )" ,   // -P
+	"[FLAG] Skip sensor match" ,            // -s 新增
 };
 
 struct option option_long[ ] = {
@@ -64,7 +66,8 @@ struct option option_long[ ] = {
 	{ "gop"              , required_argument , NULL , 'p' } ,
 	{ "minqp"            , required_argument , NULL , 'q' } ,
 	{ "maxqp"            , required_argument , NULL , 'r' } ,
-	{ "config-path"      , required_argument , NULL , 'P' } ,   // 新增 -P 参数
+	{ "config-path"      , required_argument , NULL , 'P' } ,
+	{ "skip-match"       , no_argument       , NULL , 's' } ,   // 新增长选项
 };
 
 int i_main_width = DEFAULT_MAIN_WIDTH;
@@ -92,26 +95,32 @@ static void *ak_rtsp_vi_init(void)
 {
 	printf("[DEBUG] === Enter ak_rtsp_vi_init ===\n");
 	printf("[DEBUG] config_path = %s\n", config_path);
+	printf("[DEBUG] skip_sensor_match = %d\n", skip_sensor_match);
 
-	// 检查路径是否存在
-	struct stat st;
-	if (stat(config_path, &st) == 0) {
+	// 检查路径是否存在（仅当需要匹配时）
+	if (!skip_sensor_match) {
+		struct stat st;
+		if (stat(config_path, &st) != 0) {
+			printf("[ERROR] Path %s does NOT exist or is inaccessible!\n", config_path);
+			return NULL;
+		}
 		printf("[DEBUG] Path %s exists.\n", config_path);
+	}
+
+	// 传感器匹配（根据标志跳过）
+	if (!skip_sensor_match) {
+		printf("[DEBUG] Calling ak_vi_match_sensor(\"%s\") ...\n", config_path);
+		if (ak_vi_match_sensor(config_path) < 0) {
+			ak_print_error_ex("match sensor failed\n");
+			printf("[ERROR] ak_vi_match_sensor returned error.\n");
+			return NULL;
+		}
+		printf("[DEBUG] ak_vi_match_sensor succeeded.\n");
 	} else {
-		printf("[ERROR] Path %s does NOT exist or is inaccessible!\n", config_path);
-		return NULL;
+		printf("[DEBUG] Skipping ak_vi_match_sensor (user requested).\n");
 	}
 
-	/* match sensor */
-	printf("[DEBUG] Calling ak_vi_match_sensor(\"%s\") ...\n", config_path);
-	if (ak_vi_match_sensor(config_path) < 0) {
-		ak_print_error_ex("match sensor failed\n");
-		printf("[ERROR] ak_vi_match_sensor returned error.\n");
-		return NULL;
-	}
-	printf("[DEBUG] ak_vi_match_sensor succeeded.\n");
-
-	/* open device */
+	/* 打开设备 */
 	void *handle = ak_vi_open(VIDEO_DEV0);
 	if (handle == NULL) {
 		ak_print_error_ex("vi open failed\n");
@@ -120,7 +129,7 @@ static void *ak_rtsp_vi_init(void)
 	}
 	printf("[DEBUG] ak_vi_open succeeded, handle = %p\n", handle);
 
-	/* get camera resolution */
+	/* 获取传感器分辨率 */
 	struct video_resolution resolution = {0};
 	if (ak_vi_get_sensor_resolution(handle, &resolution)) {
 		ak_print_error_ex("get sensor resolution failed\n");
@@ -129,7 +138,7 @@ static void *ak_rtsp_vi_init(void)
 	}
 	printf("[DEBUG] Sensor resolution: width=%d, height=%d\n", resolution.width, resolution.height);
 
-	/* set crop information */
+	/* 设置通道属性 */
 	struct video_channel_attr attr;
 	attr.crop.left = 0;
 	attr.crop.top = 0;
@@ -208,8 +217,7 @@ int main(int argc, char **argv)
 
 	register_signal();
 
-	// 新增：支持 -P 参数
-	while( ( i_option = getopt_long( argc , argv , "ha:b:c:d:e:f:g:i:j:k:l:m:n:o:p:q:r:P:" , option_long , NULL ) ) != -1 ) {
+	while( ( i_option = getopt_long( argc , argv , "ha:b:c:d:e:f:g:i:j:k:l:m:n:o:p:q:r:P:s" , option_long , NULL ) ) != -1 ) {
 		switch( i_option ) {
 			case 'h' :
 				help_hint( ) ;
@@ -265,10 +273,17 @@ int main(int argc, char **argv)
 			case 'r' :
 				i_maxqp = atoi( optarg ) ;
 				break;
-			case 'P' :   // 新增：指定配置文件目录
+			case 'P' :
 				config_path = optarg ;
 				printf("[INFO] Config path set to: %s\n", config_path);
 				break;
+			case 's' :
+				skip_sensor_match = 1 ;
+				printf("[INFO] Will skip sensor match step.\n");
+				break;
+			default:
+				help_hint();
+				return 1;
 		}
 	}
 
