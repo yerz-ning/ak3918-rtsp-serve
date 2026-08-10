@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <sys/stat.h>
+#include <errno.h>
 
 #include "ak_thread.h"
 #include "ak_common.h"
@@ -12,7 +13,7 @@
 #include "ak_venc.h"
 #include "ak_rtsp.h"
 
-// 声明安凯 ISP SDK 初始化函数（来自 libakispsdk.so）
+// 声明安凯 ISP SDK 初始化函数
 int AK_ISP_sdk_init(const char *config_file);
 
 #define DEFAULT_CONFIG_PATH          "/etc/jffs2/"
@@ -37,6 +38,7 @@ int AK_ISP_sdk_init(const char *config_file);
 
 char *config_path = DEFAULT_CONFIG_PATH;
 int skip_sensor_match = 0;
+int init_mode = 0;  // 0=默认, 1=强制init, 2=环境变量, 3=重试循环
 
 char ac_option_hint[  ][ LEN_HINT ] = {
     "       HELP" ,
@@ -53,6 +55,7 @@ char ac_option_hint[  ][ LEN_HINT ] = {
     "[NUM]  ( DEFAULT: 42 )" ,
     "[PATH] ( DEFAULT: '/etc/jffs2/' )" ,
     "[FLAG] Skip sensor match (ignore error)" ,
+    "[0|1|2|3] Init mode (0=default,1=force,2=env,3=retry)" ,
 };
 
 struct option option_long[ ] = {
@@ -70,6 +73,7 @@ struct option option_long[ ] = {
     { "maxqp"            , required_argument , NULL , 'r' } ,
     { "config-path"      , required_argument , NULL , 'P' } ,
     { "skip-match"       , no_argument       , NULL , 's' } ,
+    { "init-mode"        , required_argument , NULL , 'm' } ,
 };
 
 int i_main_width = DEFAULT_MAIN_WIDTH;
@@ -93,49 +97,99 @@ char *pc_prog_name = NULL ;
 
 static int run_flag = AK_FALSE;
 
+// 尝试打开视频设备，支持多种初始化策略
+static void *try_open_vi(const char *isp_config_path)
+{
+    void *handle = NULL;
+    char env_buf[256];
+
+    // 策略 0：默认（先调用 AK_ISP_sdk_init，再 open）
+    if (init_mode == 0 || init_mode == 3) {
+        printf("[TRY] Calling AK_ISP_sdk_init(\"%s\")\n", isp_config_path);
+        int ret = AK_ISP_sdk_init(isp_config_path);
+        printf("[TRY] AK_ISP_sdk_init returned %d\n", ret);
+        handle = ak_vi_open(VIDEO_DEV0);
+        if (handle) return handle;
+        printf("[TRY] ak_vi_open failed with mode 0\n");
+        if (init_mode == 0) return NULL;
+    }
+
+    // 策略 1：强制 init + open（与 0 相同，但可能重复）
+    if (init_mode == 1) {
+        printf("[TRY] Mode 1: Force init and open\n");
+        AK_ISP_sdk_init(isp_config_path);
+        handle = ak_vi_open(VIDEO_DEV0);
+        if (handle) return handle;
+        printf("[TRY] Mode 1 failed\n");
+    }
+
+    // 策略 2：设置环境变量再 open
+    if (init_mode == 2) {
+        snprintf(env_buf, sizeof(env_buf), "AK_ISP_CONFIG=%s", isp_config_path);
+        putenv(env_buf);
+        printf("[TRY] Set env AK_ISP_CONFIG=%s\n", isp_config_path);
+        handle = ak_vi_open(VIDEO_DEV0);
+        if (handle) return handle;
+        // 尝试另一个变量名
+        snprintf(env_buf, sizeof(env_buf), "ISP_CONFIG_FILE=%s", isp_config_path);
+        putenv(env_buf);
+        printf("[TRY] Set env ISP_CONFIG_FILE=%s\n", isp_config_path);
+        handle = ak_vi_open(VIDEO_DEV0);
+        if (handle) return handle;
+        printf("[TRY] Mode 2 failed\n");
+    }
+
+    // 策略 3：重试循环（init -> open -> 重新 init -> open）
+    if (init_mode == 3) {
+        for (int i = 0; i < 3; i++) {
+            printf("[TRY] Retry loop %d: init and open\n", i+1);
+            AK_ISP_sdk_init(isp_config_path);
+            handle = ak_vi_open(VIDEO_DEV0);
+            if (handle) return handle;
+            printf("[TRY] Retry %d failed\n", i+1);
+            if (i < 2) sleep(1);
+        }
+    }
+
+    return NULL;
+}
+
 static void *ak_rtsp_vi_init(void)
 {
     printf("[DEBUG] === Enter ak_rtsp_vi_init ===\n");
     printf("[DEBUG] config_path = %s\n", config_path);
     printf("[DEBUG] skip_sensor_match = %d\n", skip_sensor_match);
+    printf("[DEBUG] init_mode = %d\n", init_mode);
 
-    // ---- 新增：调用 ISP SDK 初始化，加载配置文件 ----
-    // 构造配置文件路径：config_path/isp_h63.conf
+    // 构造 ISP 配置文件路径
     char isp_config[256];
     snprintf(isp_config, sizeof(isp_config), "%s/isp_h63.conf", config_path);
-    printf("[DEBUG] Calling AK_ISP_sdk_init(\"%s\")\n", isp_config);
-    int ret = AK_ISP_sdk_init(isp_config);
-    printf("[DEBUG] AK_ISP_sdk_init returned %d\n", ret);
-    // ------------------------------------------------
+    printf("[DEBUG] ISP config file: %s\n", isp_config);
 
     struct stat st;
-    if (stat(config_path, &st) != 0) {
-        printf("[ERROR] Path %s does NOT exist or is inaccessible!\n", config_path);
-        return NULL;
+    if (stat(isp_config, &st) != 0) {
+        printf("[ERROR] ISP config file %s does not exist!\n", isp_config);
+        // 尝试使用 h63 以外的，但先警告
     }
-    printf("[DEBUG] Path %s exists.\n", config_path);
 
-    // 始终调用 ak_vi_match_sensor，但根据 skip 标志决定是否检查返回值
-    printf("[DEBUG] Calling ak_vi_match_sensor(\"%s\") ...\n", config_path);
-    ret = ak_vi_match_sensor(config_path);
-    if (ret < 0) {
-        printf("[DEBUG] ak_vi_match_sensor returned %d\n", ret);
-        if (!skip_sensor_match) {
+    // 始终调用 ak_vi_match_sensor（除非跳过）
+    if (!skip_sensor_match) {
+        printf("[DEBUG] Calling ak_vi_match_sensor(\"%s\") ...\n", config_path);
+        int ret = ak_vi_match_sensor(config_path);
+        if (ret < 0) {
+            printf("[DEBUG] ak_vi_match_sensor returned %d, but skip flag not set -> error\n", ret);
             ak_print_error_ex("match sensor failed\n");
-            printf("[ERROR] ak_vi_match_sensor returned error and skip flag is NOT set.\n");
             return NULL;
-        } else {
-            printf("[DEBUG] ak_vi_match_sensor failed but skip flag is set, continuing anyway.\n");
         }
-    } else {
         printf("[DEBUG] ak_vi_match_sensor succeeded.\n");
+    } else {
+        printf("[DEBUG] Skipping ak_vi_match_sensor (user requested).\n");
     }
 
-    /* 打开设备 */
-    void *handle = ak_vi_open(VIDEO_DEV0);
+    // 使用多策略尝试打开设备
+    void *handle = try_open_vi(isp_config);
     if (handle == NULL) {
-        ak_print_error_ex("vi open failed\n");
-        printf("[ERROR] ak_vi_open failed.\n");
+        printf("[ERROR] All open strategies failed.\n");
         return NULL;
     }
     printf("[DEBUG] ak_vi_open succeeded, handle = %p\n", handle);
@@ -228,7 +282,7 @@ int main(int argc, char **argv)
 
     register_signal();
 
-    while( ( i_option = getopt_long( argc , argv , "ha:b:c:d:e:f:g:i:j:k:l:m:n:o:p:q:r:P:s" , option_long , NULL ) ) != -1 ) {
+    while( ( i_option = getopt_long( argc , argv , "ha:b:c:d:e:f:g:i:j:k:l:m:n:o:p:q:r:P:s:m:" , option_long , NULL ) ) != -1 ) {
         switch( i_option ) {
             case 'h' :
                 help_hint( ) ;
@@ -291,6 +345,10 @@ int main(int argc, char **argv)
             case 's' :
                 skip_sensor_match = 1 ;
                 printf("[INFO] Will skip sensor match error (ignore failure).\n");
+                break;
+            case 'm' :
+                init_mode = atoi(optarg);
+                printf("[INFO] Init mode set to %d\n", init_mode);
                 break;
             default:
                 help_hint();
